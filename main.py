@@ -182,24 +182,27 @@ class VolumeDataset(Dataset):
             }
 
         elif self.model_name == 'EXPERIMENT':
-            #CONTINUOUS DATAS
             #add periods to end
             missing_intraday = 104 - (idx + 1)%104
             output_dataset.insert(0, 'periods_to_end', range(Sn + missing_intraday, missing_intraday, -1))
-            output_dataset['periods_to_end'] = output_dataset['periods_to_end']/(104*Sn)
-            #drop closing
+            #CONTINUOUS
+            #output_dataset_close = output_dataset[output_dataset['k'] == 104]
+            #output_dataset = output_dataset[output_dataset['k'] != 104]
             periods_to_end = output_dataset['periods_to_end']/(104*Sn)
             volume = output_dataset['volume']
             total_volume = output_dataset['total_volume']
             week_day = output_dataset['dw']
             month = output_dataset['m']
+            #CLOSING DATA
+            #volume_close = output_dataset_close['volume']
             return {
                 'volume' : torch.tensor(volume.values, dtype=torch.float32), 
                 'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
                 'periods_to_end' : torch.tensor(periods_to_end.values, dtype=torch.float32), 
                 'week_day' : torch.tensor(week_day.values, dtype=torch.float32),
                 'dw_one_hot': torch.tensor(output_dataset[['dw0','dw1','dw2','dw3','dw4']].values, dtype=torch.float32),
-                'm_one_hot': torch.tensor(output_dataset[['m1','m2','m3','m4','m5','m6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12']].values, dtype=torch.float32)
+                'm_one_hot': torch.tensor(output_dataset[['m1','m2','m3','m4','m5','m6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12']].values, dtype=torch.float32),
+                #'volume_close':torch.tensor(volume_close.values, dtype=torch.float32)
             }
 
 ###
@@ -368,7 +371,14 @@ class EXPERIMENT(nn.Module):
 
     def prepare_input(self, batch):
         #batch, Sn, 
-        return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device).to(device)), axis=2)
+        return torch.cat((batch['volume'].unsqueeze(-1), 
+                          batch['periods_to_end'].unsqueeze(-1), 
+                          batch['dw_one_hot'], 
+                          batch['m_one_hot']), 
+                          axis=2).to(device)
+        #return torch.cat((batch['volume'].unsqueeze(-1), 
+        #                  batch['periods_to_end'].unsqueeze(-1)), 
+        #                  axis=2).to(device)
 
     def prepare_target(self, batch):
         return batch['total_volume'][:,-1:].to(device)
@@ -399,21 +409,22 @@ optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 #model_name = 'LSTM2'
 #model = LSTM2(input_size).to(device)
 
-##LSTM4input
-#version = '0'
-#batch_size = 50
-#past_input_n_days = 3
-#Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-#input_size = 4  # 3*104 volumes + 1 missing intraday count
-#model_name = 'LSTM4input'
-#model = LSTM4input(input_size).to(device)
-#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+#LSTM4input
+version = '0'
+batch_size = 50
+past_input_n_days = 3
+Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+input_size = 4  # 3*104 volumes + 1 missing intraday count
+model_name = 'LSTM4input'
+model = LSTM4input(input_size).to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
 #EXPERIMENT
 version = '0'
-past_input_n_days = 22*3
+batch_size = 20
+past_input_n_days = 10
 Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-input_size = 4  # 3*104 volumes + 1 missing intraday count
+input_size = 19
 model_name = 'EXPERIMENT'
 model = EXPERIMENT(input_size).to(device)
 optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
@@ -431,9 +442,9 @@ rmse = RMSE()
 #optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
 train = VolumeDataset('dataKCx.csv', Sn=Sn, train=True, last_training_date="2021-5-08", model_name=model_name)
-train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
+train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=15, pin_memory=True)
 test = VolumeDataset('dataKCx.csv', Sn=Sn, train=False, last_training_date="2021-5-08", model_name=model_name)
-test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
+test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=15, pin_memory=True)
 denorm = train.total_volume_normalizer.denormalize
 
 ###
