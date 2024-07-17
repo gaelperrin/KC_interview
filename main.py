@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch import Tensor 
 from sklearn.preprocessing import MinMaxScaler
+import os
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -41,10 +42,16 @@ class MinMaxNormalizer:
         return normalized_tensor * (self.max_val - self.min_val) + self.min_val
 
 class VolumeDataset(Dataset):
-    def __init__(self, path_to_csv, Sn, train=True, last_training_date="2022-03-09", model_name = 'LSTM'):
+    def __init__(self, path_to_csv, Sn, train=True, last_training_date="2022-03-09", model_name = 'LSTM', Cn=-1):
+        '''
+        Sn: how many days back to look for the continuous or opening volumes
+        Cn: how many days back to look for the closing volumes
+        '''
 
         self.data = pd.read_csv(path_to_csv)
         self.Sn = Sn
+        self.Cn = Cn
+        self.days_back = max(Cn, Sn)
         self.train = train
         self.model_name = model_name
 
@@ -61,27 +68,40 @@ class VolumeDataset(Dataset):
         #period k and date d integers used in final performance evaluation
         self.data['k'] = (self.data['id']-1)%104 + 1
         self.data['d'] = (self.data['id'] -1)//104 + 1
+        #pd.get_dummies(self.data.dw).rename({'0':'dw'})
 
         #compute total volume
         self.total_volume_per_day = self.data.groupby('date')['volume'].sum()
         self.data = self.data.merge(self.total_volume_per_day, on='date', how='left')
         self.data.rename(columns = {"volume_x":"volume", "volume_y":"total_volume"}, inplace=True)
 
-        #commpute total volume norm
-        self.total_volume_per_day_norm = self.total_volume_per_day/168000000
-        self.data = self.data.merge(self.total_volume_per_day_norm, on='date', how='left')
-        self.data.rename(columns = {"volume_x":"volume", "volume_y":"total_volume_norm"}, inplace=True)
+        ##compute total volume norm
+        #self.total_volume_per_day_norm = self.total_volume_per_day/168000000
+        #self.data = self.data.merge(self.total_volume_per_day_norm, on='date', how='left')
+        #self.data.rename(columns = {"volume_x":"volume", "volume_y":"total_volume_norm"}, inplace=True)
+
+        #compute cumulated sum
+        self.data['cum_volume']  = self.data['volume'].cumsum()
 
         #compute missing intraday
         self.data['missing_intraday'] = 104 - self.data['k']
+
+        #compute week 1-hot
+        self.data['m'] = self.data['date_time'].dt.month
+        self.data['dw'] = self.data['date_time'].dt.dayofweek
+        self.data = pd.concat([self.data, pd.get_dummies(self.data['m'])], axis=1)
+        self.data.rename(columns = {1:"m1", 2:"m2", 3:"m3", 4:"m4", 5:"m5", 6:"m6", 7:"m7", 8:"m8", 9:"m9", 10:"m10", 11:"m11", 12:"m12"}, inplace=True)
+        self.data = pd.concat([self.data, pd.get_dummies(self.data['dw'])], axis=1)
+        self.data.rename(columns = {0:"dw0", 1:"dw1", 2:"dw2", 3:"dw3", 4:"dw4"}, inplace=True)
+
 
         #separated data in test and train
         self.train_dataset = self.data[self.data['date'] <= last_training_date]
         self.test_dataset = self.data[self.data['date'] > last_training_date]
 
         ####
-        ##How to do it ? Problem with outliers
-        ###normalize
+        ##Normalization
+        ####
         self.scaler= MinMaxScaler(feature_range=(0, 1))
         self.train_dataset.loc[:, 'volume'] = self.scaler.fit_transform(self.train_dataset[['volume']])
         self.test_dataset.loc[:, 'volume'] = self.scaler.transform(self.test_dataset[['volume']])
@@ -90,25 +110,18 @@ class VolumeDataset(Dataset):
         self.train_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.fit_normalize(self.train_dataset[['total_volume']])
         self.test_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.normalize(self.test_dataset[['total_volume']])
 
-        ####normalize
-        #self.scaler_volume = MinMaxScaler(feature_range=(0, 1))
-        #self.train_dataset.loc[:, 'volume'] = self.scaler_volume.fit_transform(self.train_dataset[['volume']])
-        #self.test_dataset.loc[:, 'volume'] = self.scaler_volume.transform(self.test_dataset[['volume']])
-        #self.scaler_total= MinMaxScaler(feature_range=(0, 1))
-        #self.train_dataset.loc[:, 'total_volume'] = self.scaler_total.fit_transform(self.train_dataset[['total_volume']])
-        #self.test_dataset.loc[:, 'total_volume'] = self.scaler_total.transform(self.test_dataset[['total_volume']])
-
-        #self.scaler.inverse_transform(self.total_volume_per_day_norm)[:, [0]]
+        self.cum_volume_normalizer = MinMaxNormalizer()
+        self.train_dataset.loc[:, 'cum_volume'] = self.cum_volume_normalizer.fit_normalize(self.train_dataset[['cum_volume']])
+        self.test_dataset.loc[:, 'cum_volume'] = self.cum_volume_normalizer.normalize(self.test_dataset[['cum_volume']])
 
     def __len__(self):
         if self.train:
-            return len(self.train_dataset) - self.Sn + 1
+            return len(self.train_dataset) - self.days_back + 1
         else:
-            return len(self.test_dataset) - self.Sn + 1
+            return len(self.test_dataset) - self.days_back + 1
 
     def __getitem__(self, idx):
         if self.train:
-            #all past Sn volumes
             output_dataset = self.train_dataset[idx:idx + self.Sn]
         else:
             output_dataset = self.test_dataset[idx:idx + self.Sn]
@@ -129,12 +142,64 @@ class VolumeDataset(Dataset):
             }
         elif self.model_name == 'LSTM2':
             volume = output_dataset['volume']
-            total_volume = output_dataset['total_volume_norm']
+            total_volume = output_dataset['total_volume']
             missing_intraday = output_dataset['missing_intraday']
             return {
                 'volume' : torch.tensor(volume.values, dtype=torch.float32), 
                 'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
                 'missing_intraday' : torch.tensor(missing_intraday.values, dtype=torch.float32), 
+            }
+        
+        elif self.model_name == 'LSTM4input':
+            missing_intraday = 104 - (idx + 1)%104
+            output_dataset.insert(0, 'periods_to_end', range(Sn + missing_intraday, missing_intraday, -1))
+            periods_to_end = output_dataset['periods_to_end']/(104*Sn)
+            volume = output_dataset['volume']
+            total_volume = output_dataset['total_volume']
+            week_day = output_dataset['dw']
+            month = output_dataset['m']
+            return {
+                'volume' : torch.tensor(volume.values, dtype=torch.float32), 
+                'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
+                'periods_to_end' : torch.tensor(periods_to_end.values, dtype=torch.float32), 
+                'week_day' : torch.tensor(week_day.values, dtype=torch.float32),
+                'month' : torch.tensor(month.values, dtype=torch.float32)
+            }
+
+        elif self.model_name == 'LSTM3input':
+            missing_intraday = 104 - (idx + 1)%104
+            output_dataset.insert(0, 'periods_to_end', range(Sn + missing_intraday, missing_intraday, -1))
+            periods_to_end = output_dataset['periods_to_end']/(104*Sn)
+            volume = output_dataset['volume']
+            total_volume = output_dataset['total_volume']
+            week_day = output_dataset['dw']
+            month = output_dataset['m']
+            return {
+                'volume' : torch.tensor(volume.values, dtype=torch.float32), 
+                'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
+                'periods_to_end' : torch.tensor(periods_to_end.values, dtype=torch.float32), 
+                'week_day' : torch.tensor(week_day.values, dtype=torch.float32),
+            }
+
+        elif self.model_name == 'EXPERIMENT':
+            #CONTINUOUS DATAS
+            #add periods to end
+            missing_intraday = 104 - (idx + 1)%104
+            output_dataset.insert(0, 'periods_to_end', range(Sn + missing_intraday, missing_intraday, -1))
+            output_dataset['periods_to_end'] = output_dataset['periods_to_end']/(104*Sn)
+            #drop closing
+            periods_to_end = output_dataset['periods_to_end']/(104*Sn)
+            volume = output_dataset['volume']
+            total_volume = output_dataset['total_volume']
+            week_day = output_dataset['dw']
+            month = output_dataset['m']
+            return {
+                'volume' : torch.tensor(volume.values, dtype=torch.float32), 
+                'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
+                'periods_to_end' : torch.tensor(periods_to_end.values, dtype=torch.float32), 
+                'week_day' : torch.tensor(week_day.values, dtype=torch.float32),
+                'dw_one_hot': torch.tensor(output_dataset[['dw0','dw1','dw2','dw3','dw4']].values, dtype=torch.float32),
+                'm_one_hot': torch.tensor(output_dataset[['m1','m2','m3','m4','m5','m6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12']].values, dtype=torch.float32)
             }
 
 ###
@@ -239,6 +304,75 @@ class LSTM_multifeatures(nn.Module):
     def prepare_target(self, batch):
         return batch['total_volume'][:,-1:].to(device)
 
+class LSTM4input(nn.Module):
+    def __init__(self, input_size):
+        super(LSTM4input, self).__init__()
+        self.lstm = nn.LSTM(input_size, 32, batch_first=True)
+        self.fc1 = nn.Linear(32, 16)
+        self.fc2 = nn.Linear(16, 8)
+        self.fc3 = nn.Linear(8, 1)  # Output layer (single neuron for regression)
+
+    def forward(self, input):
+        x = input
+        x, _ = self.lstm(x)
+        x = torch.relu(self.fc1(x[:,-1,:]))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+    def prepare_input(self, batch):
+        #batch, Sn, 
+        return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device), batch['month'].to(device)), axis=2)
+
+    def prepare_target(self, batch):
+        return batch['total_volume'][:,-1:].to(device)
+
+class LSTM3input(nn.Module):
+    def __init__(self, input_size):
+        super(LSTM3input, self).__init__()
+        self.lstm = nn.LSTM(input_size, 64, batch_first=True)
+        self.fc1 = nn.Linear(64, 32)
+        self.fc2 = nn.Linear(32, 16)
+        self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
+
+    def forward(self, input):
+        x = input
+        x, _ = self.lstm(x)
+        x = torch.relu(self.fc1(x[:,-1,:]))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+    def prepare_input(self, batch):
+        #batch, Sn, 
+        return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device).to(device)), axis=2)
+
+    def prepare_target(self, batch):
+        return batch['total_volume'][:,-1:].to(device)
+
+class EXPERIMENT(nn.Module):
+    def __init__(self, input_size):
+        super(EXPERIMENT, self).__init__()
+        self.lstm = nn.LSTM(input_size, 64, batch_first=True)
+        self.fc1 = nn.Linear(64, 32)
+        self.fc2 = nn.Linear(32, 16)
+        self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
+
+    def forward(self, input):
+        x = input
+        x, _ = self.lstm(x)
+        x = torch.relu(self.fc1(x[:,-1,:]))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+    def prepare_input(self, batch):
+        #batch, Sn, 
+        return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device).to(device)), axis=2)
+
+    def prepare_target(self, batch):
+        return batch['total_volume'][:,-1:].to(device)
+
 
 
 batch_size = 100
@@ -246,11 +380,12 @@ past_input_n_days = 3
 
 
 #FNN
-
-#Sn = past_input_n_days*104 + 1
-#input_size = Sn + 1  # 3*104 volumes + 1 missing intraday count
-#model_name = 'FNN'
-#model = TotalVolumeEstimator(input_size).to(device)
+past_input_n_days = 7
+Sn = past_input_n_days*104 + 1
+input_size = Sn + 1  # 3*104 volumes + 1 missing intraday count
+model_name = 'FNN'
+model = TotalVolumeEstimator(input_size).to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
 ##LSTM 
 #Sn = past_input_n_days*104 + 2 #past record + current record + unknown (to be predicted record)
@@ -258,13 +393,32 @@ past_input_n_days = 3
 #model_name = 'LSTM'
 #model = LSTM(input_size).to(device)
 
-#LSTM2
-Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-input_size = Sn - 1  # 3*104 volumes + 1 missing intraday count
-model_name = 'LSTM2'
-model = LSTM2(input_size).to(device)
+##LSTM2
+#Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+#input_size = Sn - 1  # 3*104 volumes + 1 missing intraday count
+#model_name = 'LSTM2'
+#model = LSTM2(input_size).to(device)
 
-num_epochs=10
+##LSTM4input
+#version = '0'
+#batch_size = 50
+#past_input_n_days = 3
+#Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+#input_size = 4  # 3*104 volumes + 1 missing intraday count
+#model_name = 'LSTM4input'
+#model = LSTM4input(input_size).to(device)
+#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+
+#EXPERIMENT
+version = '0'
+past_input_n_days = 22*3
+Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+input_size = 4  # 3*104 volumes + 1 missing intraday count
+model_name = 'EXPERIMENT'
+model = EXPERIMENT(input_size).to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+
+num_epochs=100
 
 class RMSE(nn.Module):
     def forward(self, y_pred, y_true):
@@ -274,12 +428,12 @@ class RMSE(nn.Module):
 
 criterion = nn.MSELoss()
 rmse = RMSE()
-optimizer = optim.Adam(model.parameters(), lr=0.00001)
+#optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
 train = VolumeDataset('dataKCx.csv', Sn=Sn, train=True, last_training_date="2021-5-08", model_name=model_name)
-train_loader = DataLoader(train, batch_size=batch_size, shuffle=True)
+train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
 test = VolumeDataset('dataKCx.csv', Sn=Sn, train=False, last_training_date="2021-5-08", model_name=model_name)
-test_loader = DataLoader(test, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
 denorm = train.total_volume_normalizer.denormalize
 
 ###
@@ -353,6 +507,7 @@ plt.title('Training Loss vs. Epochs')
 plt.legend()
 plt.grid(True)
 plt.show()
+plt.savefig(f'MSE_loss_{model_name}_{version}.png')
 
 plt.figure(1)
 plt.plot(epochs, rmse_loss_list_train, label='Training Loss', color='b')
@@ -363,7 +518,10 @@ plt.title('Training Loss vs. Epochs')
 plt.legend()
 plt.grid(True)
 plt.show()
+plt.savefig(f'RMSE_loss_{model_name}_{version}.png')
 
+working_directory = os.path.dirname(os.path.realpath(__file__))
+torch.save(model.state_dict, f'{working_directory}/{model_name}_{version}.pth')
 ###
 #Performances
 ###
