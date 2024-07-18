@@ -131,7 +131,7 @@ class VolumeDataset(Dataset):
             return {
                 'volume' : torch.tensor(volume.values, dtype=torch.float32), 
             }
-        elif self.model_name == 'FNN':
+        elif self.model_name == 'FNN' or self.model_name == 'LSTM3':
             volume = output_dataset['volume']
             total_volume = output_dataset['total_volume']
             missing_intraday = output_dataset['missing_intraday']
@@ -383,19 +383,29 @@ class EXPERIMENT(nn.Module):
     def prepare_target(self, batch):
         return batch['total_volume'][:,-1:].to(device)
 
+#EXPERIMENT
+version = '0'
+batch_size = 20
+past_input_n_days = 10
+Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+input_size = 19
+model_name = 'EXPERIMENT'
+model = EXPERIMENT(input_size).to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+
 
 
 batch_size = 100
 past_input_n_days = 3
 
 
-#FNN
-past_input_n_days = 7
-Sn = past_input_n_days*104 + 1
-input_size = Sn + 1  # 3*104 volumes + 1 missing intraday count
-model_name = 'FNN'
-model = TotalVolumeEstimator(input_size).to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+##FNN
+#past_input_n_days = 7
+#Sn = past_input_n_days*104 + 1
+#input_size = Sn + 1  # 3*104 volumes + 1 missing intraday count
+#model_name = 'FNN'
+#model = TotalVolumeEstimator(input_size).to(device)
+#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
 ##LSTM 
 #Sn = past_input_n_days*104 + 2 #past record + current record + unknown (to be predicted record)
@@ -409,25 +419,74 @@ optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 #model_name = 'LSTM2'
 #model = LSTM2(input_size).to(device)
 
-#LSTM4input
+##LSTM4input
+#version = '0'
+#batch_size = 50
+#past_input_n_days = 3
+#Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+#input_size = 4  # 3*104 volumes + 1 missing intraday count
+#model_name = 'LSTM4input'
+#model = LSTM4input(input_size).to(device)
+#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+
+
+class LSTM3(nn.Module):
+    def __init__(self, input_size):
+        super(LSTM3, self).__init__()
+        self.lstm = nn.LSTM(input_size, 128, batch_first=True)
+        self.fc1 = nn.Linear(15, 64)
+        self.fc2 = nn.Linear(64, 32)
+        self.fc3 = nn.Linear(32, 16)
+        self.fc4 = nn.Linear(16, 1)
+        self.conv1 = nn.Conv1d(1, 1,kernel_size=5,stride=2,dilation=1,padding=0)
+        self.bn1 = nn.BatchNorm1d(1)
+        self.conv2 = nn.Conv1d(1, 1, kernel_size=4, stride=2,dilation=1, padding=0)
+        self.bn2 = nn.BatchNorm1d(1)
+        self.conv3 = nn.Conv1d(1, 1, kernel_size=4, stride=2,dilation=1, padding=0)
+        self.bn3 = nn.BatchNorm1d(1)
+        self.conv4 = nn.Conv1d(1,1,kernel_size=4,stride=3,dilation=1,padding=0)
+        self.out = nn.Tanh()  # Output layer (single neuron for regression)
+
+    def forward(self, input):
+        x = input[0]
+        y = input[1]
+        x, _ = self.lstm(x)
+        x = x.reshape(x.size(0), 1, x.size(1))
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = x.reshape(x.size(0), x.size(2))
+        x =torch.cat([x,y],-1)
+
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
+        x = self.fc4(x)
+        x = self.out(x)
+        return x
+
+    def prepare_input(self, batch):
+        #batch, Sn,
+        x = batch['volume'][:,0:-1].squeeze().to(device)
+        y = batch['missing_intraday'][:,-1:].to(device)
+        return (x, y)
+
+    def prepare_target(self, batch):
+        return batch['total_volume'][:,-1:].to(device)
+
+#LSTM3
 version = '0'
 batch_size = 50
 past_input_n_days = 3
-Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-input_size = 4  # 3*104 volumes + 1 missing intraday count
-model_name = 'LSTM4input'
-model = LSTM4input(input_size).to(device)
+Sn = past_input_n_days*104 + 2 #past record + current record + unknown (to be predicted record)
+input_size =  Sn - 1 # 3*104 volumes + 1 missing intraday count
+model_name = 'LSTM3'
+model = LSTM3(input_size).to(device)
 optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
-#EXPERIMENT
-version = '0'
-batch_size = 20
-past_input_n_days = 10
-Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-input_size = 19
-model_name = 'EXPERIMENT'
-model = EXPERIMENT(input_size).to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
 num_epochs=100
 
@@ -442,9 +501,9 @@ rmse = RMSE()
 #optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
 train = VolumeDataset('dataKCx.csv', Sn=Sn, train=True, last_training_date="2021-5-08", model_name=model_name)
-train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=15, pin_memory=True)
+train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
 test = VolumeDataset('dataKCx.csv', Sn=Sn, train=False, last_training_date="2021-5-08", model_name=model_name)
-test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=15, pin_memory=True)
+test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
 denorm = train.total_volume_normalizer.denormalize
 
 ###
