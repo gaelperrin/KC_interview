@@ -9,6 +9,7 @@ import torch.optim as optim
 from torch import Tensor 
 from sklearn.preprocessing import MinMaxScaler
 import os
+import datetime as dt
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -21,7 +22,7 @@ path_to_csv = 'dataKCx.csv'
 #FNN, LSTM2, LSTM_multifeatures, LSTM3, LSTM4input, EXPERIMENT
 model_to_run = 'FNN'
 batch_size = 100
-num_epochs = 0
+num_epochs = 20
 
 class MinMaxNormalizer:
     def __init__(self):
@@ -47,17 +48,16 @@ class MinMaxNormalizer:
         return normalized_tensor * (self.max_val - self.min_val) + self.min_val
 
 class VolumeDataset(Dataset):
-    def __init__(self, path_to_csv, Sn, train=True, last_training_date="2022-03-09", model_name = 'LSTM', Cn=-1):
+    def __init__(self, path_to_csv, Sn=104*3 + 1, dataset='train', model_name = 'LSTM'):
         '''
         Sn: how many days back to look for the continuous or opening volumes
-        Cn: how many days back to look for the closing volumes
+        dataset: train, validation or test
         '''
 
         self.data = pd.read_csv(path_to_csv)
         self.Sn = Sn
-        self.Cn = Cn
-        self.days_back = max(Cn, Sn)
-        self.train = train
+        #self.train = train
+        self.dataset = dataset
         self.model_name = model_name
 
         self.data.rename(columns = {"Unnamed: 0":"id"}, inplace=True)
@@ -90,7 +90,6 @@ class VolumeDataset(Dataset):
 
         #compute missing intraday
         self.data['missing_intraday'] = 104 - self.data['k']
-
         #compute week 1-hot
         self.data['m'] = self.data['date_time'].dt.month
         self.data['dw'] = self.data['date_time'].dt.dayofweek
@@ -100,35 +99,53 @@ class VolumeDataset(Dataset):
         self.data.rename(columns = {0:"dw0", 1:"dw1", 2:"dw2", 3:"dw3", 4:"dw4"}, inplace=True)
 
 
-        #separated data in test and train
-        self.train_dataset = self.data[self.data['date'] <= last_training_date]
-        self.test_dataset = self.data[self.data['date'] > last_training_date]
+        #separated data in train, validation, test
+        #use about 20% for validation
+        end_train_day = 348 #2021-10-08
+        end_valid_day = 438 #2022-03-08
+        self.train_dataset = self.data[self.data['d'] <= end_train_day]
+        self.validation_dataset = self.data[(self.data['d'] > end_train_day) & (self.data['d'] <= end_valid_day)]
+        self.test_dataset = self.data[(self.data['d'] > end_valid_day)]
+        #last_training_date_dt = dt.datetime.strptime(last_training_date, '%Y-%m-%d').date()
+        #self.train_dataset = self.data[self.data['date_time'].dt.date <= last_training_date_dt]
+        #self.test_dataset = self.data[self.data['date_time'].dt.date > last_training_date_dt]
+        #self.test_dataset = self.data[self.data['date'] > last_training_date]
+        #self.train_dataset = self.data[self.data['date'] <= last_training_date]
+        #self.test_dataset = self.data[self.data['date'] > last_training_date]
 
         ####
         ##Normalization
         ####
         self.scaler= MinMaxScaler(feature_range=(0, 1))
         self.train_dataset.loc[:, 'volume'] = self.scaler.fit_transform(self.train_dataset[['volume']])
+        self.validation_dataset.loc[:, 'volume'] = self.scaler.transform(self.validation_dataset[['volume']])
         self.test_dataset.loc[:, 'volume'] = self.scaler.transform(self.test_dataset[['volume']])
 
         self.total_volume_normalizer = MinMaxNormalizer()
         self.train_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.fit_normalize(self.train_dataset[['total_volume']])
+        self.validation_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.normalize(self.validation_dataset[['total_volume']])
         self.test_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.normalize(self.test_dataset[['total_volume']])
 
         self.cum_volume_normalizer = MinMaxNormalizer()
         self.train_dataset.loc[:, 'cum_volume'] = self.cum_volume_normalizer.fit_normalize(self.train_dataset[['cum_volume']])
+        self.validation_dataset.loc[:, 'cum_volume'] = self.cum_volume_normalizer.normalize(self.validation_dataset[['cum_volume']])
         self.test_dataset.loc[:, 'cum_volume'] = self.cum_volume_normalizer.normalize(self.test_dataset[['cum_volume']])
 
     def __len__(self):
-        if self.train:
-            return len(self.train_dataset) - self.days_back + 1
-        else:
-            return len(self.test_dataset) - self.days_back + 1
+        assert self.dataset in ['train', 'validation', 'test'], 'Wrong dataset parameter'
+        if self.dataset == 'train':
+            return len(self.train_dataset) - self.Sn + 1
+        elif self.dataset == 'validation':
+            return len(self.validation_dataset) - self.Sn + 1
+        elif self.dataset == 'test':
+            return len(self.test_dataset) - self.Sn + 1
 
     def __getitem__(self, idx):
-        if self.train:
+        if self.dataset == 'train':
             output_dataset = self.train_dataset[idx:idx + self.Sn]
-        else:
+        elif self.dataset == 'validation':
+            output_dataset = self.validation_dataset[idx:idx + self.Sn]
+        elif self.dataset == 'test':
             output_dataset = self.test_dataset[idx:idx + self.Sn]
 
         if self.model_name == 'LSTM':
@@ -462,9 +479,9 @@ criterion = nn.MSELoss()
 rmse = RMSE()
 #optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
-train = VolumeDataset('dataKCx.csv', Sn=Sn, train=True, last_training_date="2021-5-08", model_name=model_name)
+train = VolumeDataset(path_to_csv, Sn=Sn, dataset='train', model_name=model_name)
 train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
-test = VolumeDataset('dataKCx.csv', Sn=Sn, train=False, last_training_date="2021-5-08", model_name=model_name)
+test = VolumeDataset(path_to_csv, Sn=Sn, dataset='validation', model_name=model_name)
 test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
 denorm = train.total_volume_normalizer.denormalize
 
@@ -516,7 +533,7 @@ rmse_loss_list_test = []
 for epoch in range(num_epochs):
     average_loss_train, average_rmse_loss_train = train(train_loader, model, criterion, optimizer)
     average_loss_test, average_rmse_loss_test = test(test_loader, model, criterion)
-    print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {average_loss_train}, Test Loss: {average_loss_test}, RMSE Train Loss: {average_rmse_loss_train}, RMSE Test Loss: {average_rmse_loss_test}")
+    print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {average_loss_train}, Validation Loss: {average_loss_test}, RMSE Train Loss: {average_rmse_loss_train}, RMSE Validation Loss: {average_rmse_loss_test}")
     loss_list_train.append(average_loss_train)
     rmse_loss_list_train.append(average_rmse_loss_train)
     loss_list_test.append(average_loss_test)
@@ -527,7 +544,7 @@ print('pass')
 epochs = range(1, num_epochs + 1)
 plt.figure(0)
 plt.plot(epochs, loss_list_train, label='Training Loss', color='b')
-plt.plot(epochs, loss_list_test, label='Testing Loss', color='r')
+plt.plot(epochs, loss_list_test, label='Validation Loss', color='r')
 plt.xlabel('Epochs')
 plt.ylabel('MSE Loss')
 plt.title('Training Loss vs. Epochs')
@@ -538,7 +555,7 @@ plt.savefig(f'MSE_loss_{model_name}_{version}.png')
 
 plt.figure(1)
 plt.plot(epochs, rmse_loss_list_train, label='Training Loss', color='b')
-plt.plot(epochs, rmse_loss_list_test, label='Testing Loss', color='r')
+plt.plot(epochs, rmse_loss_list_test, label='Validation Loss', color='r')
 plt.xlabel('Epochs')
 plt.ylabel('RMSE Loss')
 plt.title('Training Loss vs. Epochs')
@@ -554,9 +571,9 @@ torch.save(model.state_dict, f'{working_directory}/{model_name}_{version}.pth')
 ###
 #todo: implement latest changes
 
-train = VolumeDataset(path_to_csv, Sn=Sn, train=True, last_training_date="2021-5-08", model_name=model_name)
+train = VolumeDataset(path_to_csv, Sn=Sn, dataset='train', model_name=model_name)
 train_loader_eval = DataLoader(train, batch_size=104, shuffle=False)
-test = VolumeDataset(path_to_csv, Sn=Sn, train=False, last_training_date="2021-5-08", model_name=model_name)
+test = VolumeDataset(path_to_csv, Sn=Sn, dataset='test', model_name=model_name)
 test_loader_eval = DataLoader(test, batch_size=104, shuffle=False)
 
 model.eval()
