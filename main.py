@@ -18,6 +18,11 @@ path_to_csv = 'dataKCx.csv'
 #Sophia
 #path_to_csv = 'drive/MyDrive/kepler_test/dataKCx.csv'
 
+#FNN, LSTM2, LSTM_multifeatures, LSTM3, LSTM4input, EXPERIMENT
+model_to_run = 'FNN'
+batch_size = 100
+num_epochs = 0
+
 class MinMaxNormalizer:
     def __init__(self):
         self.min_val = None
@@ -209,243 +214,124 @@ class VolumeDataset(Dataset):
 #Models
 ###
 
-class LSTM(nn.Module):
-    def __init__(self, input_size):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=10, num_layers=1, batch_first=True)
-        self.linear = nn.Linear(10, 1)
+if model_to_run == 'FNN':
+    #A simple fully connected neural network
+    class FNN(nn.Module):
+        def __init__(self, input_size):
+            super(FNN, self).__init__()
+            self.fc1 = nn.Linear(input_size, 64)
+            self.fc2 = nn.Linear(64, 32)
+            self.fc3 = nn.Linear(32, 1)  # Output layer (single neuron for regression)
 
-    def forward(self, x):
-        x, _ = self.lstm(x)
-        x = self.linear(x)
-        return x
+        def forward(self, x):
+            x = torch.relu(self.fc1(x))
+            x = torch.relu(self.fc2(x))
+            x = self.fc3(x)
+            return x
 
-    def prepare_input(self, batch):
-        #batch, Sn, 
-        return batch['volume'][:,0:-1].squeeze().to(device)
-        #return torch.narrow(batch['volume'], 1, 0, batch['volume'].shape[1] - 1).to(device)
+        def prepare_input(self, batch):
+            missing_intraday = batch['missing_intraday'][:,-1:].to(device)
+            volume = batch['volume'].to(device)
+            input = torch.cat([volume, missing_intraday], dim=1)
+            input = input.to(device)
+            return input
 
-    def prepare_target(self, batch):
-        return batch['volume'][:,-1:].squeeze(-1).to(device)
-        #return torch.narrow(batch['volume'], 1, batch['volume'].shape[1] - 1, 1).to(device)
+        def prepare_target(self, batch):
+            #this one might be wrong now
+            return batch['total_volume'][:,-1:].to(device)
 
-class TotalVolumeEstimator(nn.Module):
-    def __init__(self, input_size):
-        super(TotalVolumeEstimator, self).__init__()
-        self.fc1 = nn.Linear(input_size, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 1)  # Output layer (single neuron for regression)
+    #FNN
+    past_input_n_days = 7
+    Sn = past_input_n_days*104 + 1
+    input_size = Sn + 1  # 3*104 volumes + 1 missing intraday count
+    model_name = 'FNN'
+    version = 0
+    model = FNN(input_size).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-    
-    def prepare_input(self, batch):
-        missing_intraday = batch['missing_intraday'][:,-1:].to(device)
-        volume = batch['volume'].to(device)
-        input = torch.cat([volume, missing_intraday], dim=1)
-        input = input.to(device)
-        return input
-    
-    def prepare_target(self, batch):
-        #this one might be wrong now
-        return batch['total_volume'][:,-1:].to(device)
+elif model_to_run == 'LSTM2':
+    class LSTM2(nn.Module):
+        def __init__(self, input_size):
+            super(LSTM2, self).__init__()
+            self.lstm = nn.LSTM(input_size, 63, batch_first=True)
+            self.fc1 = nn.Linear(64, 32)
+            self.fc2 = nn.Linear(32, 16)
+            self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
 
-class LSTM2(nn.Module):
-    def __init__(self, input_size):
-        super(LSTM2, self).__init__()
-        self.lstm = nn.LSTM(input_size, 63, batch_first=True)
-        self.fc1 = nn.Linear(64, 32)
-        self.fc2 = nn.Linear(32, 16)
-        self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
+        def forward(self, input):
+            x = input[0]
+            y = input[1]
+            x, _ = self.lstm(x)
+            x = torch.cat([x,y],-1)
+            x = torch.relu(self.fc1(x))
+            x = torch.relu(self.fc2(x))
+            x = self.fc3(x)
+            return x
 
-    def forward(self, input):
-        x = input[0]
-        y = input[1]
-        x, _ = self.lstm(x)
-        x = torch.cat([x,y],-1)
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+        def prepare_input(self, batch):
+            #batch, Sn, 
+            x = batch['volume'][:,0:-1].squeeze().to(device)
+            y = batch['missing_intraday'][:,-1:].to(device)
+            return (x, y)
 
-    def prepare_input(self, batch):
-        #batch, Sn, 
-        x = batch['volume'][:,0:-1].squeeze().to(device)
-        y = batch['missing_intraday'][:,-1:].to(device)
-        return (x, y)
+        def prepare_target(self, batch):
+            return batch['total_volume'][:,-1:].to(device)
 
-    def prepare_target(self, batch):
-        return batch['total_volume'][:,-1:].to(device)
+    #LSTM2
 
-class LSTM_multifeatures(nn.Module):
-    def __init__(self, input_size):
-        super(LSTM2, self).__init__()
-        self.lstm = nn.LSTM(input_size, 63, batch_first=True)
-        self.fc1 = nn.Linear(64, 32)
-        self.fc2 = nn.Linear(32, 16)
-        self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
+    past_input_n_days = 3
+    Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+    input_size = Sn - 1  # 3*104 volumes + 1 missing intraday count
+    model_name = 'LSTM2'
+    model = LSTM2(input_size).to(device)
 
-    def forward(self, input):
-        x = input[0]
-        y = input[1]
-        x, _ = self.lstm(x)
-        x = torch.cat([x,y],-1)
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+elif model_to_run == 'LSTM_multifeatures':
+    class LSTM_multifeatures(nn.Module):
+        def __init__(self, input_size):
+            super(LSTM2, self).__init__()
+            self.lstm = nn.LSTM(input_size, 63, batch_first=True)
+            self.fc1 = nn.Linear(64, 32)
+            self.fc2 = nn.Linear(32, 16)
+            self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
 
-    def prepare_input(self, batch):
-        #batch, Sn, 
-        x = batch['volume'][:,0:-1].squeeze().to(device)
-        y = batch['missing_intraday'][:,-1:].to(device)
-        return (x, y)
+        def forward(self, input):
+            x = input[0]
+            y = input[1]
+            x, _ = self.lstm(x)
+            x = torch.cat([x,y],-1)
+            x = torch.relu(self.fc1(x))
+            x = torch.relu(self.fc2(x))
+            x = self.fc3(x)
+            return x
 
-    def prepare_target(self, batch):
-        return batch['total_volume'][:,-1:].to(device)
+        def prepare_input(self, batch):
+            #batch, Sn, 
+            x = batch['volume'][:,0:-1].squeeze().to(device)
+            y = batch['missing_intraday'][:,-1:].to(device)
+            return (x, y)
 
-class LSTM4input(nn.Module):
-    def __init__(self, input_size):
-        super(LSTM4input, self).__init__()
-        self.lstm = nn.LSTM(input_size, 32, batch_first=True)
-        self.fc1 = nn.Linear(32, 16)
-        self.fc2 = nn.Linear(16, 8)
-        self.fc3 = nn.Linear(8, 1)  # Output layer (single neuron for regression)
+        def prepare_target(self, batch):
+            return batch['total_volume'][:,-1:].to(device)
+            
+    #MISSING: Define LSTM multifeature parameters here
 
-    def forward(self, input):
-        x = input
-        x, _ = self.lstm(x)
-        x = torch.relu(self.fc1(x[:,-1,:]))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-    def prepare_input(self, batch):
-        #batch, Sn, 
-        return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device), batch['month'].to(device)), axis=2)
-
-    def prepare_target(self, batch):
-        return batch['total_volume'][:,-1:].to(device)
-
-class LSTM3input(nn.Module):
-    def __init__(self, input_size):
-        super(LSTM3input, self).__init__()
-        self.lstm = nn.LSTM(input_size, 64, batch_first=True)
-        self.fc1 = nn.Linear(64, 32)
-        self.fc2 = nn.Linear(32, 16)
-        self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
-
-    def forward(self, input):
-        x = input
-        x, _ = self.lstm(x)
-        x = torch.relu(self.fc1(x[:,-1,:]))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-    def prepare_input(self, batch):
-        #batch, Sn, 
-        return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device).to(device)), axis=2)
-
-    def prepare_target(self, batch):
-        return batch['total_volume'][:,-1:].to(device)
-
-class EXPERIMENT(nn.Module):
-    def __init__(self, input_size):
-        super(EXPERIMENT, self).__init__()
-        self.lstm = nn.LSTM(input_size, 64, batch_first=True)
-        self.fc1 = nn.Linear(64, 32)
-        self.fc2 = nn.Linear(32, 16)
-        self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
-
-    def forward(self, input):
-        x = input
-        x, _ = self.lstm(x)
-        x = torch.relu(self.fc1(x[:,-1,:]))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-    def prepare_input(self, batch):
-        #batch, Sn, 
-        return torch.cat((batch['volume'].unsqueeze(-1), 
-                          batch['periods_to_end'].unsqueeze(-1), 
-                          batch['dw_one_hot'], 
-                          batch['m_one_hot']), 
-                          axis=2).to(device)
-        #return torch.cat((batch['volume'].unsqueeze(-1), 
-        #                  batch['periods_to_end'].unsqueeze(-1)), 
-        #                  axis=2).to(device)
-
-    def prepare_target(self, batch):
-        return batch['total_volume'][:,-1:].to(device)
-
-#EXPERIMENT
-version = '0'
-batch_size = 20
-past_input_n_days = 10
-Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-input_size = 19
-model_name = 'EXPERIMENT'
-model = EXPERIMENT(input_size).to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
-
-
-
-batch_size = 100
-past_input_n_days = 3
-
-
-##FNN
-#past_input_n_days = 7
-#Sn = past_input_n_days*104 + 1
-#input_size = Sn + 1  # 3*104 volumes + 1 missing intraday count
-#model_name = 'FNN'
-#model = TotalVolumeEstimator(input_size).to(device)
-#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
-
-##LSTM 
-#Sn = past_input_n_days*104 + 2 #past record + current record + unknown (to be predicted record)
-#input_size = Sn - 1  # 3*104 volumes + 1 missing intraday count
-#model_name = 'LSTM'
-#model = LSTM(input_size).to(device)
-
-##LSTM2
-#Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-#input_size = Sn - 1  # 3*104 volumes + 1 missing intraday count
-#model_name = 'LSTM2'
-#model = LSTM2(input_size).to(device)
-
-##LSTM4input
-#version = '0'
-#batch_size = 50
-#past_input_n_days = 3
-#Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
-#input_size = 4  # 3*104 volumes + 1 missing intraday count
-#model_name = 'LSTM4input'
-#model = LSTM4input(input_size).to(device)
-#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
-
-
-class LSTM3(nn.Module):
-    def __init__(self, input_size):
-        super(LSTM3, self).__init__()
-        self.lstm = nn.LSTM(input_size, 128, batch_first=True)
-        self.fc1 = nn.Linear(15, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 16)
-        self.fc4 = nn.Linear(16, 1)
-        self.conv1 = nn.Conv1d(1, 1,kernel_size=5,stride=2,dilation=1,padding=0)
-        self.bn1 = nn.BatchNorm1d(1)
-        self.conv2 = nn.Conv1d(1, 1, kernel_size=4, stride=2,dilation=1, padding=0)
-        self.bn2 = nn.BatchNorm1d(1)
-        self.conv3 = nn.Conv1d(1, 1, kernel_size=4, stride=2,dilation=1, padding=0)
-        self.bn3 = nn.BatchNorm1d(1)
-        self.conv4 = nn.Conv1d(1,1,kernel_size=4,stride=3,dilation=1,padding=0)
-        self.out = nn.Tanh()  # Output layer (single neuron for regression)
+elif model_to_run == 'LSTM3':
+    class LSTM3(nn.Module):
+        def __init__(self, input_size):
+            super(LSTM3, self).__init__()
+            self.lstm = nn.LSTM(input_size, 128, batch_first=True)
+            self.fc1 = nn.Linear(15, 64)
+            self.fc2 = nn.Linear(64, 32)
+            self.fc3 = nn.Linear(32, 16)
+            self.fc4 = nn.Linear(16, 1)
+            self.conv1 = nn.Conv1d(1, 1,kernel_size=5,stride=2,dilation=1,padding=0)
+            self.bn1 = nn.BatchNorm1d(1)
+            self.conv2 = nn.Conv1d(1, 1, kernel_size=4, stride=2,dilation=1, padding=0)
+            self.bn2 = nn.BatchNorm1d(1)
+            self.conv3 = nn.Conv1d(1, 1, kernel_size=4, stride=2,dilation=1, padding=0)
+            self.bn3 = nn.BatchNorm1d(1)
+            self.conv4 = nn.Conv1d(1,1,kernel_size=4,stride=3,dilation=1,padding=0)
+            self.out = nn.Tanh()  # Output layer (single neuron for regression)
 
     def forward(self, input):
         x = input[0]
@@ -477,18 +363,94 @@ class LSTM3(nn.Module):
     def prepare_target(self, batch):
         return batch['total_volume'][:,-1:].to(device)
 
-#LSTM3
-version = '0'
-batch_size = 50
-past_input_n_days = 3
-Sn = past_input_n_days*104 + 2 #past record + current record + unknown (to be predicted record)
-input_size =  Sn - 1 # 3*104 volumes + 1 missing intraday count
-model_name = 'LSTM3'
-model = LSTM3(input_size).to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+    #LSTM3
+    version = '0'
+    batch_size = 50
+    past_input_n_days = 3
+    Sn = past_input_n_days*104 + 2 #past record + current record + unknown (to be predicted record)
+    input_size =  Sn - 1 # 3*104 volumes + 1 missing intraday count
+    model_name = 'LSTM3'
+    model = LSTM3(input_size).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
+elif model_to_run == 'LSTM4input': 
 
-num_epochs=100
+    class LSTM4input(nn.Module):
+        def __init__(self, input_size):
+            super(LSTM4input, self).__init__()
+            self.lstm = nn.LSTM(input_size, 32, batch_first=True)
+            self.fc1 = nn.Linear(32, 16)
+            self.fc2 = nn.Linear(16, 8)
+            self.fc3 = nn.Linear(8, 1)  # Output layer (single neuron for regression)
+
+        def forward(self, input):
+            x = input
+            x, _ = self.lstm(x)
+            x = torch.relu(self.fc1(x[:,-1,:]))
+            x = torch.relu(self.fc2(x))
+            x = self.fc3(x)
+            return x
+
+        def prepare_input(self, batch):
+            #batch, Sn, 
+            return torch.stack((batch['volume'].to(device), batch['periods_to_end'].to(device), batch['week_day'].to(device), batch['month'].to(device)), axis=2)
+
+        def prepare_target(self, batch):
+            return batch['total_volume'][:,-1:].to(device)
+
+    #LSTM4input
+    version = '0'
+    batch_size = 50
+    past_input_n_days = 3
+    Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+    input_size = 4  # 3*104 volumes + 1 missing intraday count
+    model_name = 'LSTM4input'
+    model = LSTM4input(input_size).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+
+if model_to_run == 'EXPERIMENT':
+    
+    #This is just a place-holder used to show how to prepare the input data
+    class EXPERIMENT(nn.Module):
+        def __init__(self, input_size):
+            super(EXPERIMENT, self).__init__()
+            self.lstm = nn.LSTM(input_size, 64, batch_first=True)
+            self.fc1 = nn.Linear(64, 32)
+            self.fc2 = nn.Linear(32, 16)
+            self.fc3 = nn.Linear(16, 1)  # Output layer (single neuron for regression)
+    
+        def forward(self, input):
+            x = input
+            x, _ = self.lstm(x)
+            x = torch.relu(self.fc1(x[:,-1,:]))
+            x = torch.relu(self.fc2(x))
+            x = self.fc3(x)
+            return x
+    
+        def prepare_input(self, batch):
+            #batch, Sn, 
+            return torch.cat((batch['volume'].unsqueeze(-1), 
+                              batch['periods_to_end'].unsqueeze(-1), 
+                              batch['dw_one_hot'], 
+                              batch['m_one_hot']), 
+                              axis=2).to(device)
+            #return torch.cat((batch['volume'].unsqueeze(-1), 
+            #                  batch['periods_to_end'].unsqueeze(-1)), 
+            #                  axis=2).to(device)
+    
+        def prepare_target(self, batch):
+            return batch['total_volume'][:,-1:].to(device)
+    
+    #EXPERIMENT
+    version = '0'
+    batch_size = 20
+    past_input_n_days = 10
+    Sn = past_input_n_days*104 + 1 #past record + current record + unknown (to be predicted record)
+    input_size = 19
+    model_name = 'EXPERIMENT'
+    model = EXPERIMENT(input_size).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+
 
 class RMSE(nn.Module):
     def forward(self, y_pred, y_true):
@@ -514,13 +476,11 @@ def train(data_loader, model, loss_fn, optimizer):
     model.train()
     loss_list = []
     rmse_loss_list = []
-    import time
-    start = time.time()
+    #import time
+    #start = time.time()
     for batch in data_loader:
         prediction = model(model.prepare_input(batch))
         target = model.prepare_target(batch)
-        #total_volume_normalizer.denormalize(target)
-        #loss = loss_fn(total_volume_normalizer.denormalize(prediction), total_volume_normalizer.denormalize(target))
         loss = loss_fn(prediction, target)
         loss_list.append(loss.item())
         optimizer.zero_grad()
@@ -541,7 +501,6 @@ def test(data_loader, model, loss_fn):
         for batch in data_loader:
             prediction = model(model.prepare_input(batch))
             target = model.prepare_target(batch)
-            #loss = loss_fn(prediction, target)
             loss = loss_fn(prediction, target)
             loss_list.append(loss.item())
             rmse_loss = rmse(denorm(prediction), denorm(target))
@@ -549,8 +508,6 @@ def test(data_loader, model, loss_fn):
         average_loss = sum(loss_list)/len(loss_list)
         average_rmse_loss = sum(rmse_loss_list)/len(rmse_loss_list)
         return average_loss, average_rmse_loss
-        #average_loss = sum(loss_list)/len(loss_list)
-        #return average_loss
 
 loss_list_train = []
 rmse_loss_list_train = []
@@ -601,69 +558,57 @@ train = VolumeDataset(path_to_csv, Sn=Sn, train=True, last_training_date="2021-5
 train_loader_eval = DataLoader(train, batch_size=104, shuffle=False)
 test = VolumeDataset(path_to_csv, Sn=Sn, train=False, last_training_date="2021-5-08", model_name=model_name)
 test_loader_eval = DataLoader(test, batch_size=104, shuffle=False)
-#min_max_scaler = test.scaler_total 
 
 model.eval()
 loss_list_train = []
+rmse_loss_list_train = []
 with torch.no_grad():
     for batch in train_loader_eval:
         prediction = model(model.prepare_input(batch))
         target = model.prepare_target(batch)
-        target = target*168000000
-        prediction = prediction*168000000
-        #target = torch.tensor(min_max_scaler.inverse_transform(target.to('cpu'))).to(device)
-        #prediction = torch.tensor(min_max_scaler.inverse_transform(prediction.to('cpu'))).to(device)
-        prediction = torch.div(prediction.squeeze(), target.squeeze())
-        loss = torch.sqrt(criterion(prediction, torch.ones(104).to(device)))
-        #loss = criterion(torch.tensor(min_max_scaler.inverse_transform(prediction.to('cpu'))).to(device), target)
+        loss = criterion(prediction, target)
         loss_list_train.append(loss.item())
+        rmse_loss = rmse(denorm(prediction), denorm(target))
+        rmse_loss_list_train.append(rmse_loss.item())
 loss_list_test = []
+rmse_loss_list_test = []
 with torch.no_grad():
     for batch in test_loader_eval:
         prediction = model(model.prepare_input(batch))
         target = model.prepare_target(batch)
-        target = target*168000000
-        prediction = prediction*168000000
-        #target = torch.tensor(min_max_scaler.inverse_transform(target.to('cpu'))).to(device)
-        #prediction = torch.tensor(min_max_scaler.inverse_transform(prediction.to('cpu'))).to(device)
-        prediction = torch.div(prediction.squeeze(), target.squeeze())
-        loss = torch.sqrt(criterion(prediction, torch.ones(104).to(device)))
-        #loss = criterion(torch.tensor(min_max_scaler.inverse_transform(prediction.to('cpu'))).to(device), target)
+        loss = criterion(prediction, target)
         loss_list_test.append(loss.item())
+        rmse_loss = rmse(denorm(prediction), denorm(target))
+        rmse_loss_list_test.append(rmse_loss.item())
 
+plt.plot(3)
+plt.plot(range(1, len(loss_list_train) + 1), loss_list_train)
+plt.plot(range(len(loss_list_train) + 1, len(loss_list_train) + len(loss_list_test) + 1), loss_list_test)
+plt.xlabel('Day')
+plt.ylabel('MSE Loss')
+ax = plt.gca()
+ax.set_ylim([0, 2])
+plt.title('Train and test MSE Loss')
+plt.legend()
+plt.grid(True)
+plt.show()
+plt.savefig(f'MSE_loss_days_{model_name}_{version}.png')
 
-#for (volume, missing_intraday, total_volume, period_k, date_d) in train_loader_eval:
-#    volume = volume.to(device)
-#    missing_intraday = missing_intraday.to(device)
-#    total_volume = total_volume.to(device)
-#    input = torch.cat([volume, missing_intraday.unsqueeze(-1)], dim=1)
-#    input = input.to(device)
-#    predicted_total_volume = model(input)
-#    predicted_total_volume_ratio = torch.div(predicted_total_volume.squeeze(), total_volume)
-#    loss = torch.sqrt(criterion(predicted_total_volume_ratio, torch.ones(104).to(device)))
-#    loss_list_train.append(loss.item())
+plt.plot(4)
+plt.plot(range(1, len(rmse_loss_list_train) + 1), rmse_loss_list_train)
+plt.plot(range(len(rmse_loss_list_train) + 1, len(rmse_loss_list_train) + len(rmse_loss_list_test) + 1), rmse_loss_list_test)
+plt.xlabel('Day')
+plt.ylabel('RMSE Loss')
+ax = plt.gca()
+ax.set_ylim([0, 1])
+plt.title('Train and test RMSE Loss')
+plt.legend()
+plt.grid(True)
+plt.show()
+plt.savefig(f'RMSE_loss_days_{model_name}_{version}.png')
 
-#loss_list_test = []
-#for (volume, missing_intraday, total_volume, period_k, date_d) in test_loader_eval:
-#    volume = volume.to(device)
-#    missing_intraday = missing_intraday.to(device)
-#    total_volume = total_volume.to(device)
-#    input = torch.cat([volume, missing_intraday.unsqueeze(-1)], dim=1)
-#    input = input.to(device)
-#    predicted_total_volume = model(input)
-#    predicted_total_volume_ratio = torch.div(predicted_total_volume.squeeze(), total_volume)
-#    loss = torch.sqrt(criterion(predicted_total_volume_ratio, torch.ones(104).to(device)))
-#    loss_list_test.append(loss.item())
-
-#save model
-#import os
-#working_directory = os.path.dirname(os.path.realpath(__file__))
-#torch.save(model.state_dict, f'{working_directory}/FFN.pth')
-
-plt.scatter(range(1, len(loss_list_train) + 1), loss_list_train)
-plt.scatter(range(len(loss_list_train) + 1, len(loss_list_train) + len(loss_list_test) + 1), loss_list_test)
-
-print(f'RMSE train {sum(loss_list_train)/len(loss_list_train)}, RMSE test {sum(loss_list_test)/len(loss_list_test)}')
+print(f'MSE train {sum(loss_list_train)/len(loss_list_train)}, MSE test {sum(loss_list_test)/len(loss_list_test)}')
+print(f'RMSE train {sum(rmse_loss_list_train)/len(rmse_loss_list_train)}, RMSE test {sum(rmse_loss_list_test)/len(rmse_loss_list_test)}')
 
 
 #average_loss = sum(loss_list)/len(loss_list)
