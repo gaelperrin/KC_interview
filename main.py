@@ -90,6 +90,9 @@ class VolumeDataset(Dataset):
         #compute cumulated sum
         self.data['cum_volume']  = self.data['volume'].cumsum()
 
+        #get closing volume
+
+
         #compute missing intraday
         self.data['missing_intraday'] = 104 - self.data['k']
         #compute week 1-hot
@@ -193,7 +196,7 @@ class VolumeDataset(Dataset):
             volume = output_dataset['volume']
             total_volume = output_dataset['total_volume']
             missing_intraday = output_dataset['missing_intraday']
-            volume_close_ts = output_dataset[output_dataset['k']==104]['volume'][-Cn:]
+            volume_close_ts = output_dataset[output_dataset['k']==104]['volume'][-Sn:]
 
             return {
                 'volume' : torch.tensor(volume.values, dtype=torch.float32), 
