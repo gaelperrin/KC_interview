@@ -45,8 +45,8 @@ raw_pdf['volume_diff'] = raw_pdf['volume'] - raw_pdf['volume_yesterday']
 
 raw_pdf = raw_pdf.set_index('id')
 
-train_data = raw_pdf[raw_pdf['date'] <= "2021-5-08"]
-test_data = raw_pdf[raw_pdf['date'] > "2021-5-08"]
+train_data = raw_pdf[raw_pdf['d'] <= 438]
+test_data = raw_pdf[raw_pdf['d'] > 438]
 train_data_daily = train_data.drop_duplicates(['d']).reset_index()
 test_data_daily = test_data.drop_duplicates(['d']).reset_index()
 
@@ -57,6 +57,16 @@ np.sqrt(((train_data_daily['mean_volume'] - train_data_daily['total_volume'])/tr
 volume_aggreation = train_data.groupby('k')['volume'].mean()
 volume_aggreation_month = train_data.groupby('m')['volume'].mean()
 volume_aggreation_dayofweek = train_data.groupby('dw')['volume'].mean()
+
+#def get_new_index(x, window_length):
+#    d = x//window_length
+#    if (d+1) * window_length > 104
+
+window_length = 10
+raw_pdf['p'] = train_data['k']//window_length + 1
+raw_pdf_volume_p = raw_pdf.groupby('p').sum('volume')
+raw_pdf = raw_pdf.merge(total_volume_per_day, on='date', how='left')
+raw_pdf.rename(columns = {"volume_x":"volume", "volume_y":"volume_p"}, inplace=True)
 
 
 def do_plot(dataset):
@@ -71,48 +81,48 @@ def get_daily_data(dataset, index, train_size, validation_size):
     remaining_samples = n - index - window_size
     return train_data, validation_data, remaining_samples
 
-index = 0
-#uncommment to try other parameters
-model_parameters_list = [
-#    [(1, 2, 1), (1, 2, 1, 6)], #average MSE: 0.3746707416155054 
-#    [(1, 2, 1), (1, 1, 1, 6)], #average MSE: 0.286140910414454
-#    [(1, 2, 1), (1, 0, 1, 6)], #average MSE: 0.45770890271557335 
-    [(1, 1, 1), (1, 1, 1, 6)],  #average MSE: 0.2665712373963622 <-- best
-#    [(1, 0, 1), (1, 1, 1, 6)],  #average MSE: 1.142139652555844
-#    [(1, 1, 1), (2, 1, 1, 6)],  #average MSE: 0.26850059809350446
-#    [(1, 1, 1), (3, 1, 1, 6)],  #average MSE 0.9213187228138766
-] 
-model_parameters_list = []
-volume_column = 'total_volume'
-validation_length = 1
-make_plots_at_index = 50
-for model_parameters in model_parameters_list:
-    mse_list = []
-    remaining = 1
-    while remaining > 0:
-        train, validation, remaining = get_daily_data(train_data_daily, index, 3*21, validation_length)
-        #do fit 
-        model = SARIMAX(train[volume_column],  order = model_parameters[0],  seasonal_order = model_parameters[1])
-        fitted_model = model.fit(disp=False)
-        #compute MSE
-        validation_target = validation[-validation_length:]
-        forcast = fitted_model.forecast(validation_length)
-        MSE = np.sqrt(((((validation_target[volume_column] - forcast)/validation_target[volume_column])**2).mean()))
-        #print(f'MSE: {MSE}')
-        mse_list.append(MSE)
-        #plot t+1 prediction
-        #just to get visuals in some random steps
-        if index == make_plots_at_index:
-            plt.figure(0)
-            result = fitted_model.fittedvalues
-            result.plot(legend=True)
-            plt.plot(train.index, train[volume_column])
-            plot_acf(train[volume_column].dropna(), lags=20)
-            plot_pacf(train[volume_column].dropna(), lags=20)
-        index += 1
-        if remaining == 0:
-            break
-    print(f'Model parameters: {model_parameters}, average MSE: {sum(mse_list)/len(mse_list)}')
+#index = 0
+##uncommment to try other parameters
+#model_parameters_list = [
+##    [(1, 2, 1), (1, 2, 1, 6)], #average MSE: 0.3746707416155054 
+##    [(1, 2, 1), (1, 1, 1, 6)], #average MSE: 0.286140910414454
+##    [(1, 2, 1), (1, 0, 1, 6)], #average MSE: 0.45770890271557335 
+#    [(1, 1, 1), (1, 1, 1, 6)],  #average MSE: 0.2665712373963622 <-- best
+##    [(1, 0, 1), (1, 1, 1, 6)],  #average MSE: 1.142139652555844
+##    [(1, 1, 1), (2, 1, 1, 6)],  #average MSE: 0.26850059809350446
+##    [(1, 1, 1), (3, 1, 1, 6)],  #average MSE 0.9213187228138766
+#] 
+#model_parameters_list = []
+#volume_column = 'total_volume'
+#validation_length = 1
+#make_plots_at_index = 50
+#for model_parameters in model_parameters_list:
+#    mse_list = []
+#    remaining = 1
+#    while remaining > 0:
+#        train, validation, remaining = get_daily_data(train_data_daily, index, 3*21, validation_length)
+#        #do fit 
+#        model = SARIMAX(train[volume_column],  order = model_parameters[0],  seasonal_order = model_parameters[1])
+#        fitted_model = model.fit(disp=False)
+#        #compute MSE
+#        validation_target = validation[-validation_length:]
+#        forcast = fitted_model.forecast(validation_length)
+#        MSE = np.sqrt(((((validation_target[volume_column] - forcast)/validation_target[volume_column])**2).mean()))
+#        #print(f'MSE: {MSE}')
+#        mse_list.append(MSE)
+#        #plot t+1 prediction
+#        #just to get visuals in some random steps
+#        if index == make_plots_at_index:
+#            plt.figure(0)
+#            result = fitted_model.fittedvalues
+#            result.plot(legend=True)
+#            plt.plot(train.index, train[volume_column])
+#            plot_acf(train[volume_column].dropna(), lags=20)
+#            plot_pacf(train[volume_column].dropna(), lags=20)
+#        index += 1
+#        if remaining == 0:
+#            break
+#    print(f'Model parameters: {model_parameters}, average MSE: {sum(mse_list)/len(mse_list)}')
 
 def do_ARIMAX_loop(volume_column, validation_length, make_plots_at_index, model_parameters, dataset, train_window_size=21*3, optimizing_parameters=False):
     #volume_column = 'total_volume'
@@ -189,6 +199,10 @@ plt.figure(0)
 train['test'].plot()
 train['test'].plot()
 
+
+###
+#OLD
+###
 
 total_volume_train = train_data
 do_plot(train_data_daily['total_volume'][0:3*28])
