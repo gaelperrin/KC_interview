@@ -91,6 +91,7 @@ class VolumeDataset(Dataset):
         self.data['cum_volume']  = self.data['volume'].cumsum()
 
         #get closing volume
+        self.data['closing_volume'] = self.data['d'].map(self.data.groupby('d')['volume'].last())
 
 
         #compute missing intraday
