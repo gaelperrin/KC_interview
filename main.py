@@ -49,7 +49,7 @@ class MinMaxNormalizer:
         return normalized_tensor * (self.max_val - self.min_val) + self.min_val
 
 class VolumeDataset(Dataset):
-    def __init__(self, path_to_csv, Sn=104*3 + 1, dataset='train', model_name = 'LSTM'):
+    def __init__(self, path_to_csv, Sn=104*3 + 1, dataset='train', model_name = 'LSTM', Cn=-1):
         '''
         Sn: how many days back to look for the continuous or opening volumes
         dataset: train, validation or test
@@ -57,6 +57,7 @@ class VolumeDataset(Dataset):
 
         self.data = pd.read_csv(path_to_csv)
         self.Sn = Sn
+        self.Cn = Cn
         #self.train = train
         self.dataset = dataset
         self.model_name = model_name
@@ -188,6 +189,18 @@ class VolumeDataset(Dataset):
                 'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
                 'missing_intraday' : torch.tensor(missing_intraday.values, dtype=torch.float32), 
             }
+        if self.model_name == 'FNN2':
+            volume = output_dataset['volume']
+            total_volume = output_dataset['total_volume']
+            missing_intraday = output_dataset['missing_intraday']
+            volume_close_ts = output_dataset[output_dataset['k']==104]['volume'][-Cn:]
+
+            return {
+                'volume' : torch.tensor(volume.values, dtype=torch.float32), 
+                'volume_close_ts' : torch.tensor(volume_close_ts.values, dtype=torch.float32), 
+                'missing_intraday' : torch.tensor(missing_intraday.values, dtype=torch.float32),
+                'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
+            }
         elif self.model_name == 'LSTM2':
             volume = output_dataset['volume']
             total_volume = output_dataset['total_volume']
@@ -221,6 +234,7 @@ class VolumeDataset(Dataset):
             total_volume = output_dataset['total_volume']
             #cum_volume = output_dataset['cum_volume']
             volume = output_dataset['volume']
+            closing_volume = output_dataset[output_dataset['k']==104]['volume']
             return {
                 'volume' : torch.tensor(volume.values, dtype=torch.float32),
                 'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32),
@@ -244,7 +258,7 @@ class VolumeDataset(Dataset):
             week_day = output_dataset['dw']
             month = output_dataset['m']
             #CLOSING DATA
-            #volume_close = output_dataset_close['volume']
+            volume_close = output_dataset[output_dataset['k']==104].iloc[-self.Cn:]['volume']
             return {
                 'volume' : torch.tensor(volume.values, dtype=torch.float32), 
                 'total_volume' : torch.tensor(total_volume.values, dtype=torch.float32), 
@@ -252,6 +266,7 @@ class VolumeDataset(Dataset):
                 'week_day' : torch.tensor(week_day.values, dtype=torch.float32),
                 'dw_one_hot': torch.tensor(output_dataset[['dw0','dw1','dw2','dw3','dw4']].values, dtype=torch.float32),
                 'm_one_hot': torch.tensor(output_dataset[['m1','m2','m3','m4','m5','m6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12']].values, dtype=torch.float32),
+                'volume_close' : torch.tensor(torch.tensor(volume.values, dtype=torch.float32), dtype=torch.float32)
                 #'volume_close':torch.tensor(volume_close.values, dtype=torch.float32)
             }
 
@@ -265,7 +280,8 @@ def train_and_eval_model(model=None,
                          version=0,
                          save_plots=False, 
                          save_model=False,
-                         num_workers=1):
+                         num_workers=1,
+                         Cn=-1):
     #define loss and performance metric
     class RMSE(nn.Module):
         def forward(self, y_pred, y_true):
@@ -277,9 +293,9 @@ def train_and_eval_model(model=None,
     rmse = RMSE()
     
     #get datasets
-    train = VolumeDataset(path_to_csv, Sn=Sn, dataset='train', model_name=model_name)
+    train = VolumeDataset(path_to_csv, Sn=Sn, Cn=Cn, dataset='train', model_name=model_name)
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    test = VolumeDataset(path_to_csv, Sn=Sn, dataset='validation', model_name=model_name)
+    test = VolumeDataset(path_to_csv, Sn=Sn, Cn=Cn, dataset='validation', model_name=model_name)
     test_loader = DataLoader(test, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     denorm = train.total_volume_normalizer.denormalize
 
@@ -373,9 +389,9 @@ def train_and_eval_model(model=None,
     #Performances
     ###
     
-    train = VolumeDataset(path_to_csv, Sn=Sn, dataset='train', model_name=model_name)
+    train = VolumeDataset(path_to_csv, Sn=Sn, Cn=Cn, dataset='train', model_name=model_name)
     train_loader_eval = DataLoader(train, batch_size=104, shuffle=False)
-    test = VolumeDataset(path_to_csv, Sn=Sn, dataset='test', model_name=model_name)
+    test = VolumeDataset(path_to_csv, Sn=Sn, Cn=Cn, dataset='test', model_name=model_name)
     test_loader_eval = DataLoader(test, batch_size=104, shuffle=False)
     
     model.eval()
@@ -436,71 +452,71 @@ def train_and_eval_model(model=None,
 #Models
 ###
 
-class LSTM_conv_volume_decomp_periodsToEnd(nn.Module):
-    def __init__(self, input_size):
-        super(LSTM_conv_volume_decomp_periodsToEnd, self).__init__()
-        self.lstm = nn.LSTM(input_size, 128, batch_first=True)
-        self.fc1 = nn.Linear(64, 32)
-        self.fc2 = nn.Linear(32, 10)
-        self.fc3 = nn.Linear(10, 1)
-        self.conv2d = nn.Conv2d(in_channels=6, out_channels=1, kernel_size=(2,5))
-        self.conv2 = nn.Conv1d(128, 1, kernel_size=4, stride=2,dilation=1, padding=0)
-        self.bn2 = nn.BatchNorm1d(1)
-
-        #
-        self.fcp = nn.Linear(input_size, 64)
-        self.out = nn.Tanh()  # Output layer (single neuron for regression)
-
-    def forward(self, input):
-        x = input
-        x, _ = self.lstm(x)
-        x = x.permute(0, 2, 1)
-        #x = self.conv2d(x)
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        x = self.out(x)
-        return x
-
-    def prepare_input(self, batch):
-        #batch, Sn,
-        return torch.stack((batch['volume'].to(device), 
-                            batch['volume_sd_day_trend'].to(device),
-                            batch['volume_sd_day_seasonal'].to(device),
-                            batch['volume_sd_week_trend'].to(device),
-                            batch['volume_sd_week_seasonal'].to(device),
-                            batch['periods_to_end'].to(device)), axis=2)
-                           
-
-    def prepare_target(self, batch):
-        return batch['total_volume'][:,-1:].to(device)
-
-model_name = 'LSTM_conv_volume_decomp_periodsToEnd'
-past_input_n_days = 7
-Sn = past_input_n_days*104 + 20
-input_size = Sn  # volumes + 1 missing intraday count
-model = LSTM_conv_volume_decomp_periodsToEnd(6).to(device)
-version = 0
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
-batch_size = 100
-
-train_and_eval_model(model=model,
-                     input_path=path_to_csv,
-                     model_name='LSTM_conv_volume_decomp_periodsToEnd',
-                     Sn = Sn,
-                     num_epochs=50,
-                     optimizer=optimizer,
-                     batch_size=batch_size,
-                     version=version,
-                     save_plots=False,
-                     save_model=False)
+#class LSTM_conv_volume_decomp_periodsToEnd(nn.Module):
+#    def __init__(self, input_size):
+#        super(LSTM_conv_volume_decomp_periodsToEnd, self).__init__()
+#        self.lstm = nn.LSTM(input_size, 128, batch_first=True)
+#        self.fc1 = nn.Linear(64, 32)
+#        self.fc2 = nn.Linear(32, 10)
+#        self.fc3 = nn.Linear(10, 1)
+#        self.conv2d = nn.Conv2d(in_channels=6, out_channels=1, kernel_size=(2,5))
+#        self.conv2 = nn.Conv1d(128, 1, kernel_size=4, stride=2,dilation=1, padding=0)
+#        self.bn2 = nn.BatchNorm1d(1)
+#
+#        #
+#        self.fcp = nn.Linear(input_size, 64)
+#        self.out = nn.Tanh()  # Output layer (single neuron for regression)
+#
+#    def forward(self, input):
+#        x = input
+#        x, _ = self.lstm(x)
+#        x = x.permute(0, 2, 1)
+#        #x = self.conv2d(x)
+#        x = self.conv2(x)
+#        x = self.bn2(x)
+#        x = torch.relu(self.fc1(x))
+#        x = torch.relu(self.fc2(x))
+#        x = self.fc3(x)
+#        x = self.out(x)
+#        return x
+#
+#    def prepare_input(self, batch):
+#        #batch, Sn,
+#        return torch.stack((batch['volume'].to(device), 
+#                            batch['volume_sd_day_trend'].to(device),
+#                            batch['volume_sd_day_seasonal'].to(device),
+#                            batch['volume_sd_week_trend'].to(device),
+#                            batch['volume_sd_week_seasonal'].to(device),
+#                            batch['periods_to_end'].to(device)), axis=2)
+#                           
+#
+#    def prepare_target(self, batch):
+#        return batch['total_volume'][:,-1:].to(device)
+#
+#model_name = 'LSTM_conv_volume_decomp_periodsToEnd'
+#past_input_n_days = 7
+#Sn = past_input_n_days*104 + 20
+#input_size = Sn  # volumes + 1 missing intraday count
+#model = LSTM_conv_volume_decomp_periodsToEnd(6).to(device)
+#version = 0
+#optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+#batch_size = 100
+#
+#train_and_eval_model(model=model,
+#                     input_path=path_to_csv,
+#                     model_name='LSTM_conv_volume_decomp_periodsToEnd',
+#                     Sn = Sn,
+#                     num_epochs=50,
+#                     optimizer=optimizer,
+#                     batch_size=batch_size,
+#                     version=version,
+#                     save_plots=False,
+#                     save_model=False)
 
 #A simple fully connected neural network
-class FNN(nn.Module):
+class FNN2(nn.Module):
     def __init__(self, input_size):
-        super(FNN, self).__init__()
+        super(FNN2, self).__init__()
         self.fc1 = nn.Linear(input_size, 64)
         self.fc2 = nn.Linear(64, 32)
         self.fc3 = nn.Linear(32, 1)  # Output layer (single neuron for regression)
@@ -514,7 +530,8 @@ class FNN(nn.Module):
     def prepare_input(self, batch):
         missing_intraday = batch['missing_intraday'][:,-1:].to(device)
         volume = batch['volume'].to(device)
-        input = torch.cat([volume, missing_intraday], dim=1)
+        volume_close = batch['volume_close_ts'].to(device)
+        input = torch.cat([volume, volume_close, missing_intraday], dim=1)
         input = input.to(device)
         return input
 
@@ -523,18 +540,19 @@ class FNN(nn.Module):
         return batch['total_volume'][:,-1:].to(device)
 
 #FNN
-model_name = 'FNN'
-past_input_n_days = 7
+model_name = 'FNN2'
+past_input_n_days = 10
 Sn = past_input_n_days*104 + 1
-input_size = Sn + 1  # volumes + 1 missing intraday count
-model = FNN(input_size).to(device)
+Cn = past_input_n_days
+input_size = Sn + 1  + Cn # volumes + 1 missing intraday count
+model = FNN2(input_size).to(device)
 version = 0
 optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 batch_size = 50
 
 train_and_eval_model(model=model,
                      input_path=path_to_csv,
-                     model_name="FNN",
+                     model_name="FNN2",
                      Sn = Sn,
                      optimizer=optimizer,
                      batch_size=batch_size,
