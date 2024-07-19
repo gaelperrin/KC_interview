@@ -158,6 +158,9 @@ class VolumeDataset(Dataset):
         self.train_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.fit_normalize(self.train_dataset[['total_volume']])
         self.validation_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.normalize(self.validation_dataset[['total_volume']])
         self.test_dataset.loc[:, 'total_volume'] = self.total_volume_normalizer.normalize(self.test_dataset[['total_volume']])
+        self.train_dataset.loc[:, 'closing'] = self.total_volume_normalizer.normalize(self.train_dataset[['closing']])
+        self.validation_dataset.loc[:, 'closing'] = self.total_volume_normalizer.normalize(self.validation_dataset[['closing']])
+        self.test_dataset.loc[:, 'closing'] = self.total_volume_normalizer.normalize(self.test_dataset[['closing']])
 
         self.cum_volume_normalizer = MinMaxNormalizer()
         self.train_dataset.loc[:, 'cum_volume'] = self.cum_volume_normalizer.fit_normalize(self.train_dataset[['cum_volume']])
